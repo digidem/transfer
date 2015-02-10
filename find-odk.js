@@ -59,6 +59,7 @@ function md5(data) {
   return md5sum.digest('hex');
 }
 
+// find any ODK XML forms starting at the given file system root
 function findForms(root, cb) {
   // XXX: *.xml is an assumption
   var xmlGlob = path.join(root, '**', '*.xml');
@@ -105,6 +106,8 @@ function findForms(root, cb) {
   });
 }
 
+// traverse every property of an xform and grab filenames that match those in
+// the list of extensions
 function filesNamesFromXform(xform) {
   var fileNames = [];
 
@@ -119,6 +122,7 @@ function filesNamesFromXform(xform) {
   return fileNames;
 }
 
+// find media files by globbing a root with a list of extensions
 function findMediaFiles(root, cb) {
   var mediaGlob = '*.{' + MEDIA_EXTENSIONS.join(',') + '}';
   var mediaPath = path.join(root, '**', mediaGlob);
@@ -134,6 +138,7 @@ function findMediaFiles(root, cb) {
   });
 }
 
+// convert an XML form to JSON
 function formsToJson(forms, cb) {
   async.map(forms, function (form, cbMap) {
     fs.readFile(form, 'utf8', function (err, contents) {
@@ -311,6 +316,52 @@ function copyBundles(bundles, destination, cb) {
 
 var roots = [path.resolve('..', 'ODK-2014')];
 
+function resolvePaths(fileName, media, formPathBase) {
+  var endsWith = _.partialRight(lowerCaseEndsWith, fileName, _, _);
+  var filePaths = media.filter(endsWith);
+
+  var fileInFormDirectory = _.partialRight(fileInDirectory, formPathBase, _, _);
+
+  var inFormDirectory = _.filter(filePaths, fileInFormDirectory);
+  var notInFormDirectory = _.reject(filePaths, fileInFormDirectory);
+
+  var filePath = inFormDirectory[0] || notInFormDirectory[0];
+
+  if (filePath && _.isEmpty(inFormDirectory)) {
+    logger.warn('form file "%s" was found outside of the ' +
+      'directory where its form lives', fileName, {
+        filePathBase: filePath,
+        formPathBase: formPathBase
+      });
+  }
+
+  if (!filePath) {
+    logger.warn('form file "%s" not found', fileName);
+
+    return null;
+  }
+
+  return {
+    name: fileName,
+    path: filePath
+  };
+}
+
+function bundleMedia(form, media) {
+  var fileNames = filesNamesFromXform(form);
+  var formPathBase = path.dirname(form.meta.transfer.originalPath);
+
+  var resolvedPaths = _(fileNames)
+    .map(_.partialRight(resolvePaths, media, formPathBase, _, _))
+    .compact()
+    .value();
+
+  return {
+    form: form,
+    media: resolvedPaths
+  };
+}
+
 // TODO: discover drive roots
 async.eachSeries(roots, function (root) {
   logger.info('root directory: %s', root);
@@ -322,57 +373,15 @@ async.eachSeries(roots, function (root) {
     logger.info('found media', result.media);
     logger.info('found forms', result.forms);
 
-    formsToJson(result.forms, function (jsonForms) {
-      var bundles = jsonForms.map(function (jsonForm) {
-        var fileNames = filesNamesFromXform(jsonForm);
-        var formPathBase = path.dirname(jsonForm.meta.transfer.originalPath);
-
-        var resolvedPaths = _(fileNames)
-          .map(function (fileName) {
-            var endsWith = _.partialRight(lowerCaseEndsWith, fileName, _, _);
-            var filePaths = result.media.filter(endsWith);
-
-            var fileInFormDirectory = _.partialRight(fileInDirectory,
-              formPathBase, _, _);
-
-            var inFormDirectory = _.filter(filePaths, fileInFormDirectory);
-            var notInFormDirectory = _.reject(filePaths, fileInFormDirectory);
-
-            var filePath = inFormDirectory[0] || notInFormDirectory[0];
-
-            if (filePath && _.isEmpty(inFormDirectory)) {
-              logger.warn('form file "%s" was found outside of the ' +
-                'directory where its form lives', fileName, {
-                  filePathBase: filePath,
-                  formPathBase: formPathBase
-                });
-            }
-
-            if (!filePath) {
-              logger.warn('form file "%s" not found', fileName);
-
-              return null;
-            }
-
-            return {
-              name: fileName,
-              path: filePath
-            };
-          })
-          .compact()
-          .value();
-
-        return {
-          form: jsonForm,
-          media: resolvedPaths
-        };
-      });
+    formsToJson(result.forms, function (forms) {
+      var bundles = forms.map(_.partialRight(bundleMedia, result.media, _, _));
 
       addHashesToMedia(bundles, function (ignoredErr, hashedBundles) {
         hashedBundles.forEach(function (bundle) {
           logger.info('bundle.media', bundle.media);
         });
 
+        // TODO: generate destination list automatically
         var destination = path.resolve(process.cwd(), '../destination-a');
 
         copyBundles(hashedBundles, destination, function () {
