@@ -177,11 +177,6 @@ function lowerCaseEndsWith(a, b) {
   return _.endsWith(a.toLowerCase(), b.toLowerCase());
 }
 
-// resolve a path relative to the current working directory
-// function resolveToCwd(file) {
-//   return path.resolve(process.cwd(), file);
-// }
-
 // add an md5 hash for each media file in the form
 function addHashesToMedia(bundles, cb) {
   async.map(bundles, function (bundle, cbMapBundles) {
